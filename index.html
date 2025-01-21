@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebRTC demo</title>
+  </head>
+  <body>
+    <div id="content"></div>
+    <script type="module">
+      import { Peer } from './peer.mjs'
+
+      const wrtc = { RTCPeerConnection, RTCSessionDescription }
+      const content = document.getElementById('content')
+
+      content.innerHTML = `
+Name: <input type="text" id="name" /><br />
+Initiator: <input type="checkbox" id="initiator" /><br />
+<button id="next">Next</button>
+`
+      document.getElementById('next').addEventListener('click', async () => {
+          const name = document.getElementById('name').value.trim()
+          const isInitiator = document.getElementById('initiator').checked
+          if (!name) {
+              return
+          }
+
+          window['peer'] = new Peer(wrtc, isInitiator, name)
+          peer.onData = ({ peer, data }) => {
+              const messages = document.getElementById('messages')
+              messages.innerHTML = messages.innerHTML + `<br />${peer}: ${data}`
+          }
+
+          peer.onConnect = () => {
+              content.innerHTML = `
+<div id="messages">
+${name} connected
+</div>
+<textarea id="message" cols="80" rows="4"></textarea><br />
+<button id="send">Send</button>
+`
+              document.getElementById('send').addEventListener('click', () => {
+                  const message = document.getElementById('message')
+                  const text = message.value.trim()
+                  const messages = document.getElementById('messages')
+                  messages.innerHTML = messages.innerHTML + `<br />${name}: ${text}`
+
+                  peer.send(text)
+
+                  message.value = ''
+              })
+          }
+
+          peer.onSignal = async (signal) => {
+              console.log('wtf', signal)
+
+              if (signal.type === 'offer') {
+                  content.innerHTML = `
+Offer:<br />
+<textarea cols="80" rows="10" disabled>${JSON.stringify(signal)}</textarea><br />
+Answer:<br />
+<textarea id="answer" cols="80" rows="10"></textarea><br />
+<button id="next">Next</button>
+`
+                  document.getElementById('next').addEventListener('click', async () => {
+                      const answer = document.getElementById('answer').value.trim()
+                      if (!answer) {
+                          return
+                      }
+                      await peer.signal(JSON.parse(answer))
+                  })
+              }
+              else if (signal.type === 'answer') {
+                  content.innerHTML = `
+Answer:<br />
+<textarea cols="80" rows="10" disabled>${JSON.stringify(signal)}</textarea><br />
+`
+              }
+          }
+
+          if (!isInitiator) {
+              content.innerHTML = `
+Offer:<br />
+<textarea id="offer" cols="80" rows="10"></textarea><br />
+<button id="next">Next</button>
+`
+              document.getElementById('next').addEventListener('click', async () => {
+                  const offer = document.getElementById('offer').value.trim()
+                  if (!offer) {
+                      return
+                  }
+                  await peer.signal(JSON.parse(offer))
+              })
+          }
+
+      })
+    </script>
+  </body>
+</html>
