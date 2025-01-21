@@ -3,364 +3,97 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Web block storage</title>
+    <title>WebRTC demo</title>
   </head>
   <body>
-    <style>
-      #outgoing {
-        width: 600px;
-        word-wrap: break-word;
-        white-space: normal;
-      }
-    </style>
+    <div id="content"></div>
+    <script type="module">
+      import { Peer } from './peer.mjs'
 
-    <form>
-      <textarea id="incoming"></textarea>
-      <button type="submit">submit</button>
-    </form>
-    <pre id="outgoing"></pre>
-    <script>
-      let pc
-      let channel
+      const wrtc = { RTCPeerConnection, RTCSessionDescription }
+      const content = document.getElementById('content')
 
-      let isPcReady = false
-      let isChannelReady = false
-      let isConnected = false
-
-      let isFirstNegotiation = true
-      let isNegotiating = false
-      let queuedNegotiation = false
-
-      let isIceComplete = false
-      let onIceComplete
-      let iceCompleteTimer
-      let pendingCandidates = []
-      const iceCompleteTimeout = 5 * 1000
-
-      function makeId(length) {
-          let result = ''
-          const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
-          const charactersLength = characters.length
-          let counter = 0
-          while (counter < length) {
-              result += characters.charAt(Math.floor(Math.random() * charactersLength))
-              counter += 1
+      content.innerHTML = `
+Name: <input type="text" id="name" /><br />
+Initiator: <input type="checkbox" id="initiator" /><br />
+<button id="next">Next</button>
+`
+      document.getElementById('next').addEventListener('click', async () => {
+          const name = document.getElementById('name').value.trim()
+          const isInitiator = document.getElementById('initiator').checked
+          if (!name) {
+              return
           }
-          return result
-      }
 
-      function filterTrickle(sdp) {
-          return sdp.replace(/a=ice-options:trickle\s\n/g, '')
-      }
+          window['peer'] = new Peer(wrtc, isInitiator, name)
+          peer.onData = ({ peer, data }) => {
+              const messages = document.getElementById('messages')
+              messages.innerHTML = messages.innerHTML + `<br />${peer}: ${data}`
+          }
 
-      function onSignal(event) {
-          document.querySelector('#outgoing').textContent = JSON.stringify(event)
+          peer.onConnect = () => {
+              content.innerHTML = `
+<div id="messages">
+${name} connected
+</div>
+<textarea id="message" cols="80" rows="4"></textarea><br />
+<button id="send">Send</button>
+`
+              document.getElementById('send').addEventListener('click', () => {
+                  const message = document.getElementById('message')
+                  const text = message.value.trim()
+                  const messages = document.getElementById('messages')
+                  messages.innerHTML = messages.innerHTML + `<br />${name}: ${text}`
 
-          console.log('signal', event)
-      }
+                  peer.send(text)
 
-      function startIceCompleteTimeout() {
-          if (iceCompleteTimer) return
-          iceCompleteTimer = setTimeout(function() {
-              if (!isIceComplete) {
-                  isIceComplete = true
-                  onIceComplete()
-              }
-          }, iceCompleteTimeout)
-      }
-
-      async function createOffer() {
-          let offer = await pc.createOffer()
-          offer.sdp = filterTrickle(offer.sdp)
-
-          function sendOffer() {
-              const event = pc.localDescription || offer
-              onSignal({
-                  type: event.type,
-                  sdp: event.sdp,
+                  message.value = ''
               })
           }
 
-          await pc.setLocalDescription(offer)
-          if (isIceComplete) {
-              sendOffer()
-          }
-          else {
-              onIceComplete = sendOffer
-          }
-      }
+          peer.onSignal = async (signal) => {
+              console.log('wtf', signal)
 
-      async function createAnswer() {
-          let answer = await pc.createAnswer()
-          answer.sdp = filterTrickle(answer.sdp)
-
-          function sendAnswer() {
-              const event = pc.localDescription || answer
-              onSignal({
-                  type: event.type,
-                  sdp: event.sdp,
-              })
-          }
-
-          await pc.setLocalDescription(answer)
-          if (isIceComplete) {
-              sendAnswer()
-          }
-          else {
-              onIceComplete = sendAnswer
-          }
-      }
-
-      async function negotiate() {
-          if (isInitiator) {
-              if (isNegotiating) {
-                  queuedNegotiation = true
-              }
-              else {
-                  await createOffer()
-              }
-          }
-          else {
-              if (isNegotiating) {
-                  queuedNegotiation = true
-              }
-              else {
-                  onSignal({
-                      type: 'renegotiate',
-                      renegotiate: true,
+              if (signal.type === 'offer') {
+                  content.innerHTML = `
+Offer:<br />
+<textarea cols="80" rows="10" disabled>${JSON.stringify(signal)}</textarea><br />
+Answer:<br />
+<textarea id="answer" cols="80" rows="10"></textarea><br />
+<button id="next">Next</button>
+`
+                  document.getElementById('next').addEventListener('click', async () => {
+                      const answer = document.getElementById('answer').value.trim()
+                      if (!answer) {
+                          return
+                      }
+                      await peer.signal(JSON.parse(answer))
                   })
               }
-          }
-
-          isNegotiating = true
-      }
-
-      async function needsNegotiation() {
-          if (isInitiator || !isFirstNegotiation) {
-              await negotiate()
-          }
-          else {
-              console.log('non-initiator initial negotiation request discarded')
-          }
-          isFirstNegotiation = false
-      }
-
-      function setupData(event) {
-          if (!event.channel) {
-              throw new Error('Data channel event is missing `channel` property')
-          }
-
-          channel = event.channel
-          channel.binaryType = 'arraybuffer'
-
-          channel.addEventListener('message', function(event) {
-              onChannelMessage(event)
-          })
-
-          channel.addEventListener('open', function() {
-              onChannelOpen()
-          })
-
-          channel.addEventListener('close', function() {
-              onChannelClose()
-          })
-
-          channel.addEventListener('error', function(event) {
-              const err = event.error instanceof Error
-                    ? event.error
-                    : new Error(`Datachannel error: ${event.message} ${event.filename}:${event.lineno}:${event.colno}`)
-              throw err
-          })
-      }
-
-      async function onSignalingStateChange() {
-          if (pc.signalingState === 'stable') {
-              isNegotiating = false
-
-              if (queuedNegotiation) {
-                  queuedNegotiation = false
-                  await needsNegotiation()
-              }
-              else {
-                  console.log('negotiated')
+              else if (signal.type === 'answer') {
+                  content.innerHTML = `
+Answer:<br />
+<textarea cols="80" rows="10" disabled>${JSON.stringify(signal)}</textarea><br />
+`
               }
           }
 
-          console.log('signalingStateChange', pc.signalingState)
-      }
-
-      function onIceCandidate(event) {
-          if (!event.candidate && !isIceComplete) {
-              isIceComplete = true
-              onIceComplete()
-          }
-          if (event.candidate) {
-              startIceCompleteTimeout()
-          }
-      }
-
-      function onIceStateChange() {
-          const iceConnectionState = pc.iceConnectionState
-          const iceGatheringState = pc.iceGatheringState
-
-          console.log(
-              `iceStateChange (connection: ${iceConnectionState}) (gathering: ${iceGatheringState})`)
-
-          if (iceConnectionState === 'connected' || iceConnectionState === 'completed') {
-              isPcReady = true
-              maybeReady()
-          }
-
-          if (iceConnectionState === 'failed') {
-              throw new Error('Ice connection failed.')
-          }
-          if (iceConnectionState === 'closed') {
-              throw new Error('Ice connection closed.')
-          }
-      }
-
-      function onConnectionStateChange() {
-          if (pc.connectionState === 'failed') {
-              throw new Error('Connection failed.')
-          }
-      }
-
-      function maybeReady() {
-          console.log(`maybeReady pc ${isPcReady} channel ${isChannelReady}`)
-          if (isConnected || !isPcReady || !isChannelReady) {
-              return
-          }
-
-          isConnected = true
-          console.log('connect')
-          // onConnect()
-      }
-
-      function onChannelMessage(event) {
-          console.log('data', event.data)
-      }
-
-      function onChannelOpen() {
-          if (isConnected) {
-              return
-          }
-          console.log('on channel open')
-          isChannelReady = true
-          maybeReady()
-      }
-
-      function onChannelClose() {
-          console.log('on channel close')
-      }
-
-      async function signal(data) {
-          if (typeof data === 'string') {
-              try {
-                  data = JSON.parse(data)
-              }
-              catch (err) {
-                  data = {}
-              }
-          }
-
-          if (data.renegotiate && isInitiator) {
-              console.log('got request to renegotiate')
-              needsNegotiation()
-          }
-
-          if (data.candidate) {
-              if (pc.remoteDescription && pc.remoteDescription.type) {
-                  addIceCandidate(data.candidate)
-              }
-              else {
-                  pendingCandidates.push(data.candidate)
-              }
-          }
-
-          if (data.sdp) {
-              await pc.setRemoteDescription(new RTCSessionDescription(data))
-              pendingCandidates.forEach(candidate => {
-                  addIceCandidate(candidate)
+          if (!isInitiator) {
+              content.innerHTML = `
+Offer:<br />
+<textarea id="offer" cols="80" rows="10"></textarea><br />
+<button id="next">Next</button>
+`
+              document.getElementById('next').addEventListener('click', async () => {
+                  const offer = document.getElementById('offer').value.trim()
+                  if (!offer) {
+                      return
+                  }
+                  await peer.signal(JSON.parse(offer))
               })
-              pendingCandidates = []
-
-              if (pc.remoteDescription.type === 'offer') {
-                  createAnswer()
-              }
           }
 
-          if (!data.sdp && !data.candidate && !data.renegotiate) {
-              throw new Error('signal() called with invalid signal data')
-          }
-      }
-
-      const isInitiator = window.location.hash == '#1'
-      const peerId = makeId(20)
-
-      const configuration = {
-          iceServers: [
-              {
-                  urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'],
-              }
-          ],
-          sdpSemantics: 'unified-plan',
-      }
-
-      const content = document.getElementById('content')
-      pc = new RTCPeerConnection(configuration)
-
-      pc.addEventListener('negotiationneeded', async function() {
-          console.log('Negotiation needed')
       })
-
-      pc.addEventListener('signalingstatechange', async function() {
-          console.log('Signaling state:', pc.signalingState)
-          await onSignalingStateChange()
-      })
-
-      pc.addEventListener('iceconnectionstatechange', function() {
-          console.log('ICE connection state:', pc.iceConnectionState)
-          onIceStateChange()
-      })
-
-      pc.addEventListener('icegatheringstatechange', function() {
-          console.log('ICE gathering state:', pc.iceGatheringState)
-          onIceStateChange()
-      })
-
-      pc.addEventListener('connectionstatechange', function() {
-          console.log('Connection state:', pc.connectionState)
-          onConnectionStateChange()
-      })
-
-      pc.addEventListener('icecandidate', function(event) {
-          console.log('ICE candidate', event)
-          onIceCandidate(event)
-      })
-
-      pc.addEventListener('icecandidateerror', function(event) {
-          console.error('ICE candidate error:', event)
-      })
-
-      if (isInitiator) {
-          setupData({
-              channel: pc.createDataChannel(makeId(20))
-          })
-      }
-      else {
-          pc.addEventListener('datachannel', function(event) {
-              console.log('Incoming data channel:', event)
-              setupData(event)
-          })
-      }
-
-      needsNegotiation()
-
-      document.querySelector('form').addEventListener('submit', async function(event) {
-          event.preventDefault()
-          await signal(JSON.parse(document.querySelector('#incoming').value))
-      })
-
     </script>
   </body>
 </html>
